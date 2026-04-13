@@ -1,0 +1,17 @@
+# Файлы с данными пользователей
+stats.json
+cooldown.json
+last_winners.json
+key.txt
+
+# Виртуальное окружение
+venv/
+__pycache__/
+*.pyc
+
+# Файлы IDE
+.vscode/
+.idea/
+
+# Переменные окружения
+.env
