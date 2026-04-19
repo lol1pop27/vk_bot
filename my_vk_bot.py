@@ -15,152 +15,87 @@ import os
 # Импортируем datetime и timedelta для работы с таймерами (24 часа)
 from datetime import datetime, timedelta
 
-# ========== КОНФИГ ==========
-# Мой токен доступа к сообществу ВК (получил в vk.com/dev)
-import os  # Добавь эту строку в начало файла, если её нет
-
+# Мой токен доступа к сообществу ВК (берётся из переменных окружения)
 VK_TOKEN = os.environ.get("VK_TOKEN")
 if not VK_TOKEN:
     print("❌ Ошибка: не найден токен в переменных окружения!")
     exit(1)
+
 # ID моего сообщества (из URL группы vk.com/club237440494)
 GROUP_ID = "237440494"
-# Сколько часов нужно ждать между вызовами команд (24 часа = 1 раз в сутки)
+# Сколько часов нужно ждать между выборами (24 часа = 1 раз в сутки)
 COOLDOWN_HOURS = 24
 # Список файлов, которые нужно удалить при запуске (обнуление статистики)
-FILES = ["stats.json", "cooldown.json", "last_winners.json"]
+FILES = ["stats.json", "last_winners.json"]
 
-# ========== ОБНУЛЕНИЕ СТАТИСТИКИ ПРИ ЗАПУСКЕ ==========
-# Проходим по каждому файлу из списка
 for f in FILES:
-    # Если файл существует
     if os.path.exists(f):
-        # Удаляем его
         os.remove(f)
-    # Выводим сообщение в консоль, что файл удалён
-    print(f"🗑️ Удалён {f} (статистика обнулена)")
+        print(f"🗑️ Удалён {f} (статистика обнулена)")
 
-# ========== ПОДКЛЮЧЕНИЕ ==========
-# Создаём объект для работы с API ВКонтакте, передаём токен и версию API
 vk = vk_api.VkApi(token=VK_TOKEN, api_version='5.199').get_api()
-# Создаём слушатель событий Long Poll для моего сообщества
 longpoll = VkBotLongPoll(vk_api.VkApi(token=VK_TOKEN), GROUP_ID)
 
-# ========== УТИЛИТЫ ==========
-# Функция для отправки сообщения в беседу
 def send(chat_id, msg):
-    # Вызываем метод messages.send у объекта vk
+    """Отправляет сообщение в беседу"""
     vk.messages.send(
-        random_id=get_random_id(),  # Генерируем уникальный ID, чтобы ВК не дублировал
-        chat_id=chat_id,            # ID беседы, куда отправляем
-        message=msg                 # Текст сообщения
+        random_id=get_random_id(),
+        chat_id=chat_id,
+        message=msg
     )
 
-# Функция для получения списка всех участников беседы
 def get_members(chat_id):
-    members = []  # Пустой список, куда будем добавлять ID участников
-    # Получаем участников порциями по 200 человек (начиная с 0, потом 200, 400...)
+    """Возвращает список ID всех участников беседы (исключая ботов)"""
+    members = []
     for offset in range(0, 10000, 200):
-        # Запрашиваем участников беседы через API
         r = vk.messages.getConversationMembers(
-            peer_id=2000000000 + chat_id,  # peer_id для беседы = 2_000_000_000 + chat_id
-            offset=offset,                 # Сдвиг (сколько участников пропустить)
-            count=200                      # Сколько участников получить (макс 200)
+            peer_id=2000000000 + chat_id,
+            offset=offset,
+            count=200
         )
-        # Добавляем в список только обычных пользователей (member_id > 0, а боты имеют отрицательный ID)
         members += [m['member_id'] for m in r['items'] if m['member_id'] > 0]
-        # Если получили меньше 200 участников — это последняя порция, выходим из цикла
         if len(r['items']) < 200:
             break
-        # Пауза 0.34 секунды, чтобы не превысить лимит API (3 запроса в секунду)
         time.sleep(0.34)
-    # Возвращаем список ID участников
     return members
 
-# Функция для получения имени пользователя по его ID
 def get_name(uid):
+    """Получает имя и фамилию пользователя по его VK ID"""
     try:
-        # Запрашиваем данные о пользователе
         user = vk.users.get(user_ids=uid)[0]
-        # Возвращаем имя и фамилию
         return f"{user['first_name']} {user['last_name']}"
     except:
-        # Если произошла ошибка (например, пользователь удалён), возвращаем заглушку
         return f"Пользователь {uid}"
 
-# Функция для загрузки данных из JSON-файла
 def load(f):
-    # Если файл существует
+    """Загружает данные из JSON-файла"""
     if os.path.exists(f):
-        # Открываем файл на чтение в кодировке UTF-8
         with open(f, 'r', encoding='utf-8') as file:
-            # Загружаем и возвращаем данные из JSON
             return json.load(file)
-    # Если файла нет, возвращаем пустой словарь
     return {}
 
-# Функция для сохранения данных в JSON-файл
 def save(f, d):
-    # Открываем файл на запись в кодировке UTF-8
+    """Сохраняет данные в JSON-файл"""
     with open(f, 'w', encoding='utf-8') as file:
-        # Сохраняем данные в JSON с отступами (красивое форматирование)
         json.dump(d, file, ensure_ascii=False, indent=2)
 
-# ========== ТАЙМЕРЫ ==========
-# Функция проверки, можно ли вызывать команду (не прошло ли 24 часа)
-def check(uid, cmd):
-    # Загружаем данные о таймерах из файла cooldown.json
-    d = load("cooldown.json")
-    # Если пользователь уже использовал эту команду
-    if str(uid) in d and cmd in d[str(uid)]:
-        # Преобразуем строку с датой последнего вызова в объект datetime
-        last = datetime.strptime(d[str(uid)][cmd], "%Y-%m-%d %H:%M:%S")
-        # Если с момента последнего вызова прошло меньше COOLDOWN_HOURS часов
-        if datetime.now() - last < timedelta(hours=COOLDOWN_HOURS):
-            # Вычисляем, сколько осталось ждать
-            r = timedelta(hours=COOLDOWN_HOURS) - (datetime.now() - last)
-            # Возвращаем False и сообщение с оставшимся временем
-            return False, f"⏰ Жди {r.seconds//3600}ч {(r.seconds%3600)//60}мин"
-    # Если можно вызывать, возвращаем True и None
-    return True, None
-
-# Функция обновления времени последнего вызова команды
-def update(uid, cmd):
-    # Загружаем данные о таймерах
-    d = load("cooldown.json")
-    # Если пользователя нет в словаре, создаём для него пустой словарь
-    d.setdefault(str(uid), {})[cmd] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    # Сохраняем обновлённые данные
-    save("cooldown.json", d)
-
-# ========== СТАТИСТИКА ==========
-# Функция обновления статистики побед для пользователя
+# СТАТИСТИКА ПОБЕД 
 def update_stats(uid, title):
-    # Загружаем текущую статистику
+    """Увеличивает счётчик побед для пользователя"""
     d = load("stats.json")
-    # Если пользователя нет в статистике, создаём для него пустой словарь
     d.setdefault(str(uid), {}).setdefault(title, 0)
-    # Увеличиваем счётчик побед на 1
     d[str(uid)][title] += 1
-    # Сохраняем обновлённую статистику
     save("stats.json", d)
-    # Возвращаем новое количество побед
     return d[str(uid)][title]
 
-# Функция получения статистики по всей беседе (топ участников)
 def get_stats(chat_id):
-    # Загружаем статистику и получаем список участников
+    """Возвращает топ участников беседы по победам"""
     d, members = load("stats.json"), get_members(chat_id)
-    res = []  # Список для хранения результатов
-    # Проходим по каждому участнику
+    res = []
     for uid in members:
-        # Получаем данные о победах участника (или пустой словарь, если их нет)
         s = d.get(str(uid), {})
-        # Получаем количество побед в категориях "красавчик" и "пидор"
         h, t = s.get("красавчик", 0), s.get("пидор", 0)
-        # Если участник хоть раз побеждал
         if h + t:
-            # Добавляем его в список результатов
             res.append({
                 "uid": uid,
                 "name": get_name(uid),
@@ -168,35 +103,38 @@ def get_stats(chat_id):
                 "tomato": t,
                 "total": h + t
             })
-    # Сортируем по общему количеству побед (от большего к меньшему) и возвращаем
     return sorted(res, key=lambda x: x["total"], reverse=True)
 
-# Функция сохранения последнего победителя (для показа "текущий красавчик/пидор")
-def save_winner(chat_id, title, uid, name):
-    # Загружаем данные о последних победителях
+# ТАЙМЕР ДЛЯ БЕСЕДЫ 
+def check_chat_cooldown(chat_id, title):
+    """
+    Проверяет, выбирался ли уже победитель сегодня в этой беседе.
+    Возвращает (можно_выбирать, сообщение_об_ошибке, данные_победителя)
+    """
     d = load("last_winners.json")
-    # Сохраняем победителя с ключом "ID_беседы_название_команды"
-    d[f"{chat_id}_{title}"] = {
+    key = f"{chat_id}_{title}"
+    if key in d:
+        last_date = datetime.strptime(d[key]["date"], "%Y-%m-%d %H:%M:%S")
+        if datetime.now() - last_date < timedelta(hours=COOLDOWN_HOURS):
+            remain = timedelta(hours=COOLDOWN_HOURS) - (datetime.now() - last_date)
+            hours = remain.seconds // 3600
+            minutes = (remain.seconds % 3600) // 60
+            return False, f"⏰ Жди {hours}ч {minutes}мин до следующего выбора!", d[key]
+    return True, None, None
+
+def save_winner(chat_id, title, uid, name):
+    """Сохраняет победителя для этой беседы"""
+    d = load("last_winners.json")
+    key = f"{chat_id}_{title}"
+    d[key] = {
         "user_id": uid,
         "name": name,
         "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
-    # Сохраняем в файл
     save("last_winners.json", d)
 
-# Функция получения последнего победителя
-def get_winner(chat_id, title):
-    # Загружаем данные о последних победителях
-    d = load("last_winners.json")
-    # Формируем ключ
-    k = f"{chat_id}_{title}"
-    # Если ключ существует, возвращаем (ID, имя, дату), иначе (None, None, None)
-    return (d[k]["user_id"], d[k]["name"], d[k]["date"]) if k in d else (None, None, None)
-
-# ========== ОТСЧЁТЫ ==========
-# Словарь с шагами для анимации отсчёта перед выбором победителя
+# ОТСЧЁТЫ 
 STEPS = {
-    # Для красавчика — крутой барабан
     "handsome": [
         ("🎰 КРУТИМ БАРАБАН!", 1),
         ("🔍 Ищем красавчика...", 1.5),
@@ -205,7 +143,6 @@ STEPS = {
         ("💫 Лунная призма, дай силу...", 1),
         ("🎯 СЕКТОР ПРИЗ!", 1)
     ],
-    # Для пидора — федеральный розыск
     "tomato": [
         ("🔞 ФЕДЕРАЛЬНЫЙ РОЗЫСК ПИДОРА!", 1.5),
         ("🚀 4 - спутник запущен...", 1),
@@ -216,32 +153,57 @@ STEPS = {
     ]
 }
 
-# Функция запуска эпичного отсчёта
 def countdown(chat_id, style):
-    # Проходим по всем шагам из выбранного стиля
+    """Запускает эпичный отсчёт"""
     for t, d in STEPS[style]:
-        send(chat_id, t)  # Отправляем сообщение с текстом шага
-        time.sleep(d)     # Ждём указанное количество секунд
+        send(chat_id, t)
+        time.sleep(d)
 
-# ========== ОСНОВНАЯ ЛОГИКА ==========
-# Функция выбора случайного участника и отправки результата
-def pick(chat_id, user_id, title):
-    # Запускаем отсчёт (handsome для красавчика, tomato для пидора)
+# ПРЕДСКАЗАНИЯ 
+def get_prediction():
+    """Возвращает случайное предсказание из JSON-файла"""
+    if not os.path.exists("predictions_1000.json"):
+        return "🔮 Сегодня будет хороший день!"
+    data = load("predictions_1000.json")
+    preds = data if isinstance(data, list) else data.get("predictions", ["🔮 Удачи!"])
+    return random.choice(preds)
+
+# ОСНОВНАЯ ЛОГИКА ВЫБОРА 
+def pick(chat_id, title):
+    """
+    Выбирает случайного участника (только если сегодня ещё не выбирали)
+    title = "красавчик" или "пидор"
+    """
+    # Проверяем, можно ли выбирать сегодня
+    can_choose, msg, last_winner = check_chat_cooldown(chat_id, title)
+    
+    if not can_choose:
+        # Если уже выбирали сегодня — показываем кто и сколько осталось ждать
+        if last_winner:
+            mention = f"[id{last_winner['user_id']}|{last_winner['name']}]"
+            emoji = "🏆" if title == "красавчик" else "🔞"
+            name_rus = "Красавчик" if title == "красавчик" else "Пидор"
+            send(chat_id, f"{emoji} Сегодняшний {name_rus} дня уже выбран!\n{mention}\n{msg}")
+        else:
+            send(chat_id, msg)
+        return
+    
+    # Если можно выбирать — запускаем отсчёт
     countdown(chat_id, "handsome" if title == "красавчик" else "tomato")
-    # Обновляем таймер пользователя (чтобы не спамил)
-    update(user_id, title)
-    # Получаем список участников беседы
-    m = get_members(chat_id)
-    # Если список пуст (бот не админ), отправляем ошибку
-    if not m:
-        return send(chat_id, "❌ Сделайте бота администратором!")
+    
+    # Получаем список участников
+    members = get_members(chat_id)
+    if not members:
+        send(chat_id, "❌ Сделайте бота администратором!")
+        return
+    
     # Выбираем случайного участника
-    lucky = random.choice(m)
-    # Получаем его имя и обновляем статистику побед
-    name, wins = get_name(lucky), update_stats(lucky, title)
-    # Сохраняем как последнего победителя
+    lucky = random.choice(members)
+    name = get_name(lucky)
+    wins = update_stats(lucky, title)
     save_winner(chat_id, title, lucky, name)
-    # Формируем эмодзи, заголовок и дополнительный текст в зависимости от команды
+    
+    # Формируем итоговое сообщение
     if title == "красавчик":
         emoji = "🎉🏆"
         tu = "КРАСАВЧИК ДНЯ"
@@ -250,94 +212,43 @@ def pick(chat_id, user_id, title):
         emoji = "🔞🔴"
         tu = "ПИДОР ДНЯ"
         extra = f"🎯 Пидорас: {wins} раз(а)\n🚨 Приговорён к званию пидора!"
-    # Отправляем итоговое сообщение с упоминанием победителя
+    
     send(chat_id, f"{emoji} {tu} — [id{lucky}|{name}]! {emoji}\n{extra}")
 
-# ========== ЗАПУСК ==========
-# Выводим в консоль сообщение о запуске и список команд
+# ЗАПУСК БОТА 
 print("✅ Бот запущен! Команды: /красавчик, /пидор, /предсказание, /статистика, /")
 
-# Бесконечный цикл обработки событий от Long Poll
 for event in longpoll.listen():
-    # Если событие — новое сообщение И оно из беседы (не личка)
     if event.type == VkBotEventType.MESSAGE_NEW and event.from_chat:
-        # Получаем ID беседы
         chat = event.chat_id
-        # Получаем ID пользователя, который написал сообщение
-        uid = event.obj.message['from_id']
-        # Получаем текст сообщения, приводим к нижнему регистру и убираем пробелы по краям
         text = event.obj.message["text"].lower().strip()
         
-        # Если пользователь написал просто "/"
         if text == "/":
-            # Отправляем список доступных команд
             send(chat, "📋 **Команды:**\n🏆 /красавчик\n🔞 /пидор\n🔮 /предсказание\n📊 /статистика\n❓ /")
         
-        # Если пользователь написал "/красавчик"
         elif text == "/красавчик":
-            # Проверяем, можно ли вызывать команду
-            ok, msg = check(uid, "красавчик")
-            # Если можно
-            if ok:
-                # Запускаем выбор красавчика
-                pick(chat, uid, "красавчик")
-            else:
-                # Если нельзя — получаем текущего красавчика
-                wid, wname, _ = get_winner(chat, "красавчик")
-                # Если есть текущий красавчик, показываем его и таймер
-                if wid:
-                    send(chat, f"🏆 Текущий красавчик: [id{wid}|{wname}]\n{msg}")
-                else:
-                    send(chat, msg)
+            pick(chat, "красавчик")
         
-        # Если пользователь написал "/пидор"
         elif text == "/пидор":
-            # Проверяем, можно ли вызывать команду
-            ok, msg = check(uid, "пидор")
-            # Если можно
-            if ok:
-                # Запускаем выбор пидора
-                pick(chat, uid, "пидор")
-            else:
-                # Если нельзя — получаем текущего пидора
-                wid, wname, _ = get_winner(chat, "пидор")
-                # Если есть текущий пидор, показываем его и таймер
-                if wid:
-                    send(chat, f"🔞 Текущий пидор: [id{wid}|{wname}]\n{msg}")
-                else:
-                    send(chat, msg)
+            pick(chat, "пидор")
         
-        # Если пользователь написал "/предсказание"
         elif text == "/предсказание":
-            # Загружаем предсказания из JSON-файла
-            preds = load("predictions_1000.json")
-            # Если загрузился список, используем его, если объект — берём по ключу "predictions"
-            preds = preds if isinstance(preds, list) else preds.get("predictions", ["🔮 Удачи!"])
-            # Отправляем случайное предсказание
-            send(chat, f"🔮 **Предсказание:**\n{random.choice(preds)}")
+            send(chat, f"🔮 **Предсказание:**\n{get_prediction()}")
         
-        # Если пользователь написал "/статистика"
         elif text == "/статистика":
-            # Получаем статистику по беседе
-            s = get_stats(chat)
-            # Если статистики нет
-            if not s:
+            stats = get_stats(chat)
+            if not stats:
                 send(chat, "📊 Статистики пока нет!")
             else:
-                # Формируем сообщение с топ-15 участников
                 msg = "🏆 **СТАТИСТИКА** 🏆\n\n"
-                # Проходим по первым 15 участникам
-                for i, x in enumerate(s[:15], 1):
-                    # Выбираем медаль в зависимости от места
+                for i, x in enumerate(stats[:15], 1):
                     if i == 1:
-                        m = "🥇"
+                        medal = "🥇"
                     elif i == 2:
-                        m = "🥈"
+                        medal = "🥈"
                     elif i == 3:
-                        m = "🥉"
+                        medal = "🥉"
                     else:
-                        m = f"{i}."
-                    # Добавляем строку с именем и количеством побед
-                    msg += f"{m} {x['name']}\n   🏆 {x['handsome']} | 🔞 {x['tomato']}\n"
-                # Отправляем статистику
+                        medal = f"{i}."
+                    msg += f"{medal} {x['name']}\n   🏆 Красавчик: {x['handsome']} | 🔞 Пидор: {x['tomato']}\n"
                 send(chat, msg)
